@@ -114,10 +114,11 @@ jobs:
           docker build -t aceest-fitness:test .
           docker run --rm \
             -v ${{ github.workspace }}/tests:/app/tests \
+            -v ${{ github.workspace }}/conftest.py:/app/conftest.py \
             -v ${{ github.workspace }}/requirements.txt:/app/requirements.txt \
             --entrypoint "" \
             aceest-fitness:test \
-            sh -c "pip install pytest pytest-cov --quiet && pytest tests/ -v --tb=short"
+            sh -c "pip install pytest pytest-cov --quiet && cd /app && pytest tests/ -v --tb=short"
 
       - name: Smoke-test the running container
         run: |
