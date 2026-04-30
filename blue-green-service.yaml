@@ -1,0 +1,21 @@
+# ============================================================
+# ACEest Fitness & Gym - Blue-Green Service
+# Switch traffic: change slot from "blue" to "green" for cutover
+# To rollback: change slot back to "blue"
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: aceest-bluegreen-svc
+  namespace: aceest
+  annotations:
+    description: "Change selector slot to blue or green to switch traffic"
+spec:
+  selector:
+    app: aceest
+    slot: green       # <-- Change to "blue" to rollback instantly
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+  type: LoadBalancer

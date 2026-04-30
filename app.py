@@ -1,130 +1,192 @@
 """
 ACEest Fitness & Gym - Flask Web Application
-DevOps Assignment - CI/CD Pipeline Implementation
+Version: 3.2.4
+Flask wrapper exposing core business logic as REST API for CI/CD pipeline.
 """
 
 from flask import Flask, jsonify, request
+import sqlite3
+from datetime import datetime, date
 
 app = Flask(__name__)
+DB_NAME = "aceest_fitness.db"
+APP_VERSION = "3.2.4"
 
-# ---------- In-memory data store ----------
-clients = {}
-
-PROGRAMS = {
-    "Fat Loss": {"calorie_factor": 22, "workout": "HIIT + Cardio"},
-    "Muscle Gain": {"calorie_factor": 35, "workout": "Push/Pull/Legs"},
-    "Beginner": {"calorie_factor": 26, "workout": "Full Body 3x/week"},
+PROGRAM_TEMPLATES = {
+    "Fat Loss": ["Full Body HIIT", "Circuit Training", "Cardio + Weights"],
+    "Muscle Gain": ["Push/Pull/Legs", "Upper/Lower Split", "Full Body Strength"],
+    "Beginner": ["Full Body 3x/week", "Light Strength + Mobility"]
 }
 
 
-# ---------- Helper ----------
-def calculate_calories(weight_kg: float, program: str) -> int:
-    """Calculate daily calorie target based on weight and program."""
-    if program not in PROGRAMS:
-        return 0
-    return int(weight_kg * PROGRAMS[program]["calorie_factor"])
+# ---------- DATABASE ----------
+def init_db(db_name=DB_NAME):
+    conn = sqlite3.connect(db_name)
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY, password TEXT, role TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE, age INTEGER, height REAL, weight REAL,
+        program TEXT, calories INTEGER, target_weight REAL,
+        membership_status TEXT, membership_end TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS workouts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_name TEXT, date TEXT, workout_type TEXT,
+        duration_min INTEGER, notes TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_name TEXT, date TEXT, weight REAL, waist REAL, bodyfat REAL)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS progress (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_name TEXT, week TEXT, adherence INTEGER)""")
+    cur.execute("SELECT * FROM users WHERE username='admin'")
+    if not cur.fetchone():
+        cur.execute("INSERT INTO users VALUES ('admin','admin123','Admin')")
+    conn.commit()
+    conn.close()
 
 
-# ---------- Routes ----------
-@app.route("/", methods=["GET"])
+def get_db(db_name=None):
+    if db_name is None:
+        import app as _app
+        db_name = _app.DB_NAME
+    conn = sqlite3.connect(db_name)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ---------- ROUTES ----------
+
+@app.route("/")
 def index():
-    return jsonify({
-        "app": "ACEest Fitness & Gym",
-        "version": "3.2.4",
-        "status": "running",
-    })
+    return jsonify({"app": "ACEest Fitness & Gym", "version": APP_VERSION, "status": "running"})
 
 
-@app.route("/programs", methods=["GET"])
-def get_programs():
-    """Return all available fitness programs."""
-    return jsonify({"programs": list(PROGRAMS.keys())})
+@app.route("/health")
+def health():
+    return jsonify({"status": "healthy", "version": APP_VERSION}), 200
+
+
+@app.route("/version")
+def version():
+    return jsonify({"version": APP_VERSION}), 200
 
 
 @app.route("/clients", methods=["GET"])
 def get_clients():
-    """Return all registered clients."""
-    return jsonify({"clients": list(clients.values())})
+    conn = get_db()
+    clients = conn.execute("SELECT * FROM clients ORDER BY name").fetchall()
+    conn.close()
+    return jsonify([dict(c) for c in clients]), 200
 
 
 @app.route("/clients", methods=["POST"])
 def add_client():
-    """Register a new client."""
     data = request.get_json()
     if not data:
-        return jsonify({"error": "Request body required"}), 400
-
-    name = data.get("name", "").strip()
-    program = data.get("program", "").strip()
-    weight = data.get("weight_kg", 0)
-    age = data.get("age", 0)
-
-    if not name:
-        return jsonify({"error": "Name is required"}), 400
-    if not program or program not in PROGRAMS:
-        return jsonify({"error": f"Program must be one of: {list(PROGRAMS.keys())}"}), 400
-    if not isinstance(weight, (int, float)) or weight <= 0:
-        return jsonify({"error": "Valid weight_kg is required"}), 400
-    if name in clients:
-        return jsonify({"error": f"Client '{name}' already exists"}), 409
-
-    calories = calculate_calories(weight, program)
-    client = {
-        "name": name,
-        "age": age,
-        "weight_kg": weight,
-        "program": program,
-        "calories": calories,
-        "workout": PROGRAMS[program]["workout"],
-        "membership_status": "Active",
-    }
-    clients[name] = client
-    return jsonify({"message": "Client added", "client": client}), 201
+        return jsonify({"error": "No data provided"}), 400
+    for field in ["name", "age", "weight", "height"]:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+    conn = get_db()
+    try:
+        conn.execute("""INSERT INTO clients
+            (name, age, weight, height, program, calories, target_weight, membership_status, membership_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (data["name"], int(data["age"]), float(data["weight"]), float(data["height"]),
+             data.get("program", "Beginner"), int(data.get("calories", 2000)),
+             float(data.get("target_weight", data["weight"])),
+             data.get("membership_status", "Active"), data.get("membership_end", "")))
+        conn.commit()
+        return jsonify({"message": "Client added successfully", "name": data["name"]}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Client already exists"}), 409
+    finally:
+        conn.close()
 
 
 @app.route("/clients/<name>", methods=["GET"])
 def get_client(name):
-    """Fetch a single client by name."""
-    client = clients.get(name)
-    if not client:
-        return jsonify({"error": "Client not found"}), 404
-    return jsonify(client)
+    conn = get_db()
+    client = conn.execute("SELECT * FROM clients WHERE name=?", (name,)).fetchone()
+    conn.close()
+    if client:
+        return jsonify(dict(client)), 200
+    return jsonify({"error": "Client not found"}), 404
 
 
 @app.route("/clients/<name>", methods=["DELETE"])
 def delete_client(name):
-    """Remove a client."""
-    if name not in clients:
-        return jsonify({"error": "Client not found"}), 404
-    clients.pop(name)
-    return jsonify({"message": f"Client '{name}' deleted"})
+    conn = get_db()
+    conn.execute("DELETE FROM clients WHERE name=?", (name,))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": f"Client '{name}' deleted"}), 200
 
 
-@app.route("/clients/<name>/progress", methods=["POST"])
-def log_progress(name):
-    """Log weekly adherence for a client."""
-    if name not in clients:
-        return jsonify({"error": "Client not found"}), 404
+@app.route("/workouts", methods=["GET"])
+def get_workouts():
+    conn = get_db()
+    workouts = conn.execute("SELECT * FROM workouts ORDER BY date DESC").fetchall()
+    conn.close()
+    return jsonify([dict(w) for w in workouts]), 200
+
+
+@app.route("/workouts", methods=["POST"])
+def add_workout():
     data = request.get_json()
-    adherence = data.get("adherence", 0)
-    if not (0 <= adherence <= 100):
-        return jsonify({"error": "Adherence must be 0-100"}), 400
-    clients[name]["last_adherence"] = adherence
-    return jsonify({"message": "Progress logged", "adherence": adherence})
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+    for field in ["client_name", "workout_type", "duration_min"]:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+    conn = get_db()
+    conn.execute("""INSERT INTO workouts (client_name, date, workout_type, duration_min, notes)
+        VALUES (?, ?, ?, ?, ?)""",
+        (data["client_name"], data.get("date", date.today().isoformat()),
+         data["workout_type"], int(data["duration_min"]), data.get("notes", "")))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Workout logged successfully"}), 201
 
 
-@app.route("/calories", methods=["GET"])
-def calorie_calculator():
-    """Quick calorie estimate via query params."""
-    weight = request.args.get("weight", type=float)
-    program = request.args.get("program", "")
-    if not weight or not program:
-        return jsonify({"error": "Provide weight and program query params"}), 400
-    calories = calculate_calories(weight, program)
-    if calories == 0:
-        return jsonify({"error": "Invalid program"}), 400
-    return jsonify({"weight_kg": weight, "program": program, "calories": calories})
+@app.route("/metrics", methods=["POST"])
+def add_metrics():
+    data = request.get_json()
+    if not data or "client_name" not in data:
+        return jsonify({"error": "Missing client_name"}), 400
+    conn = get_db()
+    conn.execute("""INSERT INTO metrics (client_name, date, weight, waist, bodyfat)
+        VALUES (?, ?, ?, ?, ?)""",
+        (data["client_name"], data.get("date", date.today().isoformat()),
+         float(data.get("weight", 0)), float(data.get("waist", 0)), float(data.get("bodyfat", 0))))
+    conn.commit()
+    conn.close()
+    return jsonify({"message": "Metrics saved"}), 201
+
+
+@app.route("/programs", methods=["GET"])
+def get_programs():
+    return jsonify(PROGRAM_TEMPLATES), 200
+
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No credentials provided"}), 400
+    conn = get_db()
+    user = conn.execute(
+        "SELECT role FROM users WHERE username=? AND password=?",
+        (data.get("username", ""), data.get("password", ""))
+    ).fetchone()
+    conn.close()
+    if user:
+        return jsonify({"message": "Login successful", "role": user["role"]}), 200
+    return jsonify({"error": "Invalid credentials"}), 401
 
 
 if __name__ == "__main__":
+    init_db()
     app.run(host="0.0.0.0", port=5000, debug=False)

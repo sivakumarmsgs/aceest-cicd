@@ -1,36 +1,58 @@
-# ── Stage 1: Builder ─────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+# ============================================================
+# ACEest Fitness & Gym - Dockerfile
+# Task 5: Containerization with Docker
+# ============================================================
 
-WORKDIR /build
+# Stage 1: Base image
+FROM python:3.11-slim
 
-# Install dependencies into a separate prefix so we can copy them cleanly
-COPY requirements.txt .
-RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+# Metadata
+LABEL maintainer="ACEest DevOps Team"
+LABEL version="3.2.4"
+LABEL description="ACEest Fitness & Gym Management System"
 
-
-# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
-
-# Security: run as non-root user
-RUN addgroup --system aceest && adduser --system --ingroup aceest aceest
-
+# Set working directory
 WORKDIR /app
 
-# Copy installed packages from builder stage
-COPY --from=builder /install /usr/local
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FLASK_ENV=production \
+    APP_VERSION=3.2.4
 
-# Copy application source
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first (layer caching optimization)
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY app.py .
+COPY tests/ tests/
 
-# Switch to non-root user
+# Create non-root user for security
+RUN useradd -m -u 1000 aceest && \
+    chown -R aceest:aceest /app
+
 USER aceest
 
-# Expose Flask port
+# Expose port
 EXPOSE 5000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
 
-# Launch the application
-CMD ["python", "app.py"]
+# Initialize DB and start app
+CMD ["python", "-c", "from app import init_db; init_db()"] && \
+    CMD ["python", "app.py"]
+
+# Proper CMD with gunicorn for production
+CMD ["sh", "-c", "python -c 'from app import init_db; init_db()' && gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 60 app:app"]

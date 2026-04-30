@@ -1,0 +1,147 @@
+# ============================================================
+# ACEest Fitness & Gym - A/B Testing Deployment
+# Task 6: Deployment Strategy 4 - A/B Testing
+# Users routed to version A or B based on header/cookie
+# ============================================================
+
+# --- Version A ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aceest-version-a
+  namespace: aceest
+  labels:
+    app: aceest
+    variant: a
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aceest
+      variant: a
+  template:
+    metadata:
+      labels:
+        app: aceest
+        variant: a
+        version: "3.1.2"
+    spec:
+      containers:
+        - name: aceest
+          image: yourdockerhubuser/aceest-fitness:3.1.2
+          ports:
+            - containerPort: 5000
+          env:
+            - name: AB_VARIANT
+              value: "A"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+# --- Version B ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aceest-version-b
+  namespace: aceest
+  labels:
+    app: aceest
+    variant: b
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aceest
+      variant: b
+  template:
+    metadata:
+      labels:
+        app: aceest
+        variant: b
+        version: "3.2.4"
+    spec:
+      containers:
+        - name: aceest
+          image: yourdockerhubuser/aceest-fitness:3.2.4
+          ports:
+            - containerPort: 5000
+          env:
+            - name: AB_VARIANT
+              value: "B"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+# --- Service A ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aceest-svc-a
+  namespace: aceest
+spec:
+  selector:
+    app: aceest
+    variant: a
+  ports:
+    - port: 80
+      targetPort: 5000
+  type: ClusterIP
+---
+# --- Service B ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aceest-svc-b
+  namespace: aceest
+spec:
+  selector:
+    app: aceest
+    variant: b
+  ports:
+    - port: 80
+      targetPort: 5000
+  type: ClusterIP
+---
+# --- Ingress for Header-Based Routing ---
+# Nginx Ingress routes traffic based on custom header X-AB-Variant
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aceest-ab-ingress
+  namespace: aceest
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-by-header: "X-AB-Variant"
+    nginx.ingress.kubernetes.io/canary-by-header-value: "B"
+spec:
+  rules:
+    - host: aceest.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aceest-svc-b
+                port:
+                  number: 80
